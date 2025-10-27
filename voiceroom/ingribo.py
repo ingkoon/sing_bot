@@ -6,6 +6,7 @@ import yt_dlp
 import re
 import ctypes
 from typing import List, Optional, Dict
+import time
 import random
 
 
@@ -194,7 +195,7 @@ async def ensure_voice(ctx) -> discord.VoiceClient:
     return vc
 
 def start_playback(vc: discord.VoiceClient, track: dict, guild_player: GuildMusicPlayer, loop: asyncio.AbstractEventLoop):
-    # 좀 더 강한 ffmpeg 옵션 (유튜브 스트림 안정화)
+    """ffmpeg 실행해서 실제로 음성 재생 시작."""
     ffmpeg_opts = {
         'before_options': (
             '-reconnect 1 '
@@ -207,48 +208,54 @@ def start_playback(vc: discord.VoiceClient, track: dict, guild_player: GuildMusi
     }
     audio_source = discord.FFmpegPCMAudio(track["url"], **ffmpeg_opts)
 
-    # duration 추출 (없으면 None)
-    expected_duration = track.get("duration", None)
+    # 재생 시작 시각 기록
+    track["start_time"] = time.time()
 
     def after_play(error):
-        # 디버깅용 로그
         if error:
             print(f"[재생 에러] {error}")
-
-        # 곡이 예상보다 너무 빨리 끝났다면 (예: duration 180초인데 5초 만에 끝남)
-        # 여기서 바로 다음 곡으로 넘어가거나 disconnect하지 않고
-        # 그냥 handle_after_track을 호출하긴 하되,
-        # handle_after_track 쪽에서 disconnect를 즉시 안 하게 해서
-        # 갑자기 나가버리는 느낌을 줄인다.
-        loop.call_soon_threadsafe(
-            asyncio.create_task,
-            handle_after_track(vc, guild_player)
-        )
+        loop.call_soon_threadsafe(asyncio.create_task, handle_after_track(vc, guild_player, track))
 
     vc.play(audio_source, after=after_play)
 
-async def handle_after_track(vc: discord.VoiceClient, guild_player: GuildMusicPlayer):
-    """곡 종료 시 불리는 콜백.
-    - 다음 곡 있으면 바로 재생
-    - 없으면 playing만 False로 내리고 보이스는 유지 (즉시 disconnect 안 함)
-    """
+async def handle_after_track(vc: discord.VoiceClient, guild_player: GuildMusicPlayer, track: dict):
+    """곡 종료 이후 호출: 다음 곡 재생 or 퇴장."""
     await asyncio.sleep(0.5)
 
+    duration = track.get("duration", None)
+    start_time = track.get("start_time", None)
+    play_time = (time.time() - start_time) if start_time else None
+
+    # 1) 만약 이 시점에 방이 비어 있으면 그냥 떠
+    if voice_channel_is_empty(vc):
+        print("[INFO] 음성 채널에 유저가 없어 즉시 퇴장합니다.")
+        guild_player.playing = False
+        if vc.is_connected():
+            await vc.disconnect()
+        return
+
+    # 2) 다음 곡 있으면 그냥 다음 곡 재생
     if guild_player.has_next_track():
         next_track = guild_player.pop_next_track()
         loop = asyncio.get_event_loop()
         start_playback(vc, next_track, guild_player, loop)
-        # playing은 True 유지
+        # playing은 계속 True 상태 유지
+        return
+
+    # 3) 다음 곡 없음 → 이게 정상적인 끝인지, 비정상 끊김인지 판단
+    guild_player.playing = False
+
+    duration_ok = duration and play_time
+    normal_end = duration_ok and (play_time >= duration * 0.8)
+
+    if normal_end:
+        print("[INFO] 정상 종료 감지 → 퇴장 시도")
+        if vc.is_connected():
+            await vc.disconnect()
     else:
-        # 여기서 바로 퇴장시키지 않는다.
-        # 이유:
-        # - 유튜브 스트림이 잠깐 끊겨서 ffmpeg가 종료되면
-        #   진짜로 끝난 것처럼 보이지만 사실은 "버퍼 끊김"일 수도 있음
-        # - 봇이 즉시 나가버리면 '중간에 잘리네?'로 느껴짐
-        guild_player.playing = False
-        # vc.disconnect()는 제거
-        # 봇은 채널에 남아있게 둔다.
-        # 언제 나가냐? 사용자가 !나가기 할 때.
+        # 비정상 조기 종료라면 남아있되,
+        # 사람도 없으면 위에서 이미 나갔으니까 여기선 그냥 대기
+        print("[WARN] 비정상 조기 종료 → 채널은 유지 (사용자 재요청 대기)")
 
 async def maybe_start_playing(ctx, guild_player: GuildMusicPlayer):
     """재생 중이 아니면 바로 재생 시작. 이미 재생 중이면 아무것도 안 함."""
@@ -278,6 +285,19 @@ async def maybe_start_playing(ctx, guild_player: GuildMusicPlayer):
 # =========================
 # Commands
 # =========================
+
+def voice_channel_is_empty(vc: discord.VoiceClient) -> bool:
+    """
+    현재 voice client가 붙어 있는 채널에 '봇 이외의 유저'가 아무도 없으면 True
+    """
+    if not vc or not vc.channel:
+        return True  # 연결 자체가 없으면 비었다고 간주
+    channel = vc.channel
+    # 채널 멤버 중에 봇이 아닌 유저가 있는가?
+    for member in channel.members:
+        if not member.bot:
+            return False
+    return True
 
 @bot.command(aliases=['입장'])
 async def join(ctx):
