@@ -155,8 +155,10 @@ def build_ydl_opts(default_search: Optional[str] = None) -> dict:
 
     cookies = os.getenv("YTDLP_COOKIES")
     if cookies and os.path.exists(cookies):
+        print(f"[YTDLP] Using cookiefile: {cookies}")  # ← 추가
         opts["cookiefile"] = cookies
-
+    else:
+        print(f"[YTDLP] No cookies loaded. YTDLP_COOKIES={cookies} exists={os.path.exists(cookies) if cookies else None}")
     return opts
 
 # =========================
