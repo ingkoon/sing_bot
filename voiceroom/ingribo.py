@@ -1,25 +1,88 @@
-import discord
-import asyncio
-from discord.ext import commands
-from dico_token import Token
-import yt_dlp
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import sys
 import re
-import ctypes
-from typing import List, Optional, Dict
 import time
 import random
+import asyncio
+import ctypes.util
+import platform
+import shutil
+from typing import List, Optional, Dict
 
+import discord
+from discord.ext import commands
+import yt_dlp
+
+from dico_token import Token  # 봇 토큰은 별도 파일/환경변수로 관리 권장
 
 # =========================
-# Opus 강제 로드
+# Opus Portable Loader
 # =========================
-OPUS_LIB_PATH = "/opt/homebrew/lib/libopus.dylib"  # 필요시 libopus.0.dylib로 바꿔
-try:
-    discord.opus.load_opus(OPUS_LIB_PATH)
-    print(f"[OPUS] Loaded opus from {OPUS_LIB_PATH}")
-except OSError as e:
-    print(f"[OPUS] Failed to load opus from {OPUS_LIB_PATH}: {e}")
-    # 만약 여기서 실패하면 OpusNotLoaded가 다시 날 거야
+def load_opus_portably() -> bool:
+    """
+    EC2/리눅스/맥/윈도우에서 Opus를 자동 탐색/로드.
+    우선순위: 환경변수(OPUS_LIB) -> ctypes.util.find_library -> OS별 흔한 경로
+    """
+    if discord.opus.is_loaded():
+        return True
+
+    # 1) 환경변수
+    env_path = os.getenv("OPUS_LIB")
+    if env_path:
+        try:
+            discord.opus.load_opus(env_path)
+            print(f"[OPUS] Loaded via OPUS_LIB={env_path}")
+            return True
+        except OSError as e:
+            print(f"[OPUS] Failed via OPUS_LIB: {e}")
+
+    # 2) 시스템 검색
+    for name in ("opus", "libopus", "libopus-0"):
+        libpath = ctypes.util.find_library(name)
+        if libpath:
+            try:
+                discord.opus.load_opus(libpath)
+                print(f"[OPUS] Loaded via find_library: {libpath}")
+                return True
+            except OSError as e:
+                print(f"[OPUS] Failed via find_library({libpath}): {e}")
+
+    # 3) OS별 후보 경로
+    candidates = []
+    if sys.platform.startswith("linux"):
+        candidates += [
+            "/usr/lib/x86_64-linux-gnu/libopus.so.0",
+            "/usr/lib/x86_64-linux-gnu/libopus.so",
+            "/usr/lib64/libopus.so.0",
+            "/usr/lib64/libopus.so",
+            "/usr/local/lib/libopus.so.0",
+            "/usr/local/lib/libopus.so",
+        ]
+    elif sys.platform == "darwin":
+        candidates += [
+            "/opt/homebrew/lib/libopus.dylib",  # Apple Silicon
+            "/usr/local/lib/libopus.dylib",     # Intel mac
+        ]
+    elif sys.platform.startswith("win"):
+        candidates += ["opus.dll"]
+
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                discord.opus.load_opus(path)
+                print(f"[OPUS] Loaded from {path}")
+                return True
+            except OSError as e:
+                print(f"[OPUS] Failed to load {path}: {e}")
+
+    print("[OPUS] Could not load Opus. Voice features will fail.")
+    return False
+
+# 실제 로드 시도
+load_opus_portably()
 
 # =========================
 # 상수 / 정규식 / 이모지
@@ -36,10 +99,11 @@ track_cache: Dict[str, dict] = {}
 # =========================
 # Intents
 # =========================
+# ⚠️ 개발자 포털에서 "Message Content Intent"를 반드시 켜주세요!
 intents = discord.Intents.default()
-intents.message_content = True      # prefix 명령 처리
-intents.reactions = True            # reaction 선택
-intents.voice_states = True         # 음성 참여 상태
+intents.message_content = True
+intents.reactions = True
+intents.voice_states = True
 
 bot = commands.Bot(
     command_prefix=commands.when_mentioned_or("!"),
@@ -50,7 +114,6 @@ bot = commands.Bot(
 # =========================
 # yt-dlp Helper (동기 함수)
 # =========================
-
 def _ytdlp_search_one_sync(query: str) -> dict:
     """검색어로 유튜브 검색해서 첫번째 결과 추출 (동기)."""
     ydl_opts = {
@@ -64,7 +127,6 @@ def _ytdlp_search_one_sync(query: str) -> dict:
         info = ydl.extract_info(query, download=False)
         if "entries" in info:
             info = info["entries"][0]
-
     return {
         "webpage_url": info.get("webpage_url"),
         "url": info.get("url"),
@@ -82,7 +144,6 @@ def _ytdlp_from_url_sync(url: str) -> dict:
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
-
     return {
         "webpage_url": info.get("webpage_url"),
         "url": info.get("url"),
@@ -102,7 +163,6 @@ def _ytdlp_search_top5_sync(query: str) -> List[dict]:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(query, download=False)
         entries = info.get("entries", [])
-
     results = []
     for e in entries[:5]:
         results.append({
@@ -116,35 +176,29 @@ def _ytdlp_search_top5_sync(query: str) -> List[dict]:
 # =========================
 # yt-dlp Async Wrapper
 # =========================
-
 async def get_track_info(query: str) -> dict:
     """검색어 또는 URL -> track dict. 캐시 사용. 비동기 래핑."""
-    # 캐시 먼저 확인
     if query in track_cache:
         return track_cache[query]
-
     if YOUTUBE_URL_REGEX.match(query):
         info = await asyncio.to_thread(_ytdlp_from_url_sync, query)
     else:
         info = await asyncio.to_thread(_ytdlp_search_one_sync, query)
-
     track_cache[query] = info
     return info
 
 async def search_top5(query: str) -> List[dict]:
     """검색어 -> 상위 5 트랙 dict list (비동기 래핑)."""
-    results = await asyncio.to_thread(_ytdlp_search_top5_sync, query)
-    return results
+    return await asyncio.to_thread(_ytdlp_search_top5_sync, query)
 
 # =========================
 # Guild 음악 상태 관리
 # =========================
-
 class GuildMusicPlayer:
     def __init__(self, guild_id: int):
         self.guild_id = guild_id
-        self.queue: List[dict] = []       # 대기열
-        self.playing: bool = False        # 현재 재생 중인지
+        self.queue: List[dict] = []
+        self.playing: bool = False
         self.search_results: Dict[int, List[dict]] = {}  # message_id -> 후보 리스트
 
     def add_to_queue(self, track: dict):
@@ -173,26 +227,18 @@ def get_player(guild_id: int) -> GuildMusicPlayer:
 # =========================
 # Voice Join / Playback
 # =========================
-
 async def ensure_voice(ctx) -> discord.VoiceClient:
     """ctx.author의 음성채널에 봇이 없으면 붙는다. 이미 있으면 이동 안 함."""
     if ctx.author.voice is None or ctx.author.voice.channel is None:
         embed = discord.Embed(color=0xf66c24)
-        embed.add_field(
-            name=":exclamation:",
-            value="먼저 음성 채널에 들어가 주세요."
-        )
+        embed.add_field(name=":exclamation:", value="먼저 음성 채널에 들어가 주세요.")
         await ctx.send(embed=embed)
         raise commands.CommandError("Caller not in voice channel")
 
-    # 이미 연결된 voice_client가 있다면 그걸 쓰고, 채널 이동은 하지 않는다.
     vc = ctx.guild.voice_client
     if vc is not None and vc.is_connected():
         return vc
-
-    # 없으면 새로 연결
-    vc = await ctx.author.voice.channel.connect()
-    return vc
+    return await ctx.author.voice.channel.connect()
 
 def start_playback(vc: discord.VoiceClient, track: dict, guild_player: GuildMusicPlayer, loop: asyncio.AbstractEventLoop):
     """ffmpeg 실행해서 실제로 음성 재생 시작."""
@@ -208,7 +254,6 @@ def start_playback(vc: discord.VoiceClient, track: dict, guild_player: GuildMusi
     }
     audio_source = discord.FFmpegPCMAudio(track["url"], **ffmpeg_opts)
 
-    # 재생 시작 시각 기록
     track["start_time"] = time.time()
 
     def after_play(error):
@@ -226,7 +271,7 @@ async def handle_after_track(vc: discord.VoiceClient, guild_player: GuildMusicPl
     start_time = track.get("start_time", None)
     play_time = (time.time() - start_time) if start_time else None
 
-    # 1) 만약 이 시점에 방이 비어 있으면 그냥 떠
+    # 1) 방이 비었으면 즉시 퇴장
     if voice_channel_is_empty(vc):
         print("[INFO] 음성 채널에 유저가 없어 즉시 퇴장합니다.")
         guild_player.playing = False
@@ -234,17 +279,15 @@ async def handle_after_track(vc: discord.VoiceClient, guild_player: GuildMusicPl
             await vc.disconnect()
         return
 
-    # 2) 다음 곡 있으면 그냥 다음 곡 재생
+    # 2) 다음 곡 있으면 재생
     if guild_player.has_next_track():
         next_track = guild_player.pop_next_track()
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_eventLoop() if hasattr(asyncio, "getEventLoop") else asyncio.get_event_loop()
         start_playback(vc, next_track, guild_player, loop)
-        # playing은 계속 True 상태 유지
         return
 
-    # 3) 다음 곡 없음 → 이게 정상적인 끝인지, 비정상 끊김인지 판단
+    # 3) 다음 곡 없음
     guild_player.playing = False
-
     duration_ok = duration and play_time
     normal_end = duration_ok and (play_time >= duration * 0.8)
 
@@ -253,70 +296,49 @@ async def handle_after_track(vc: discord.VoiceClient, guild_player: GuildMusicPl
         if vc.is_connected():
             await vc.disconnect()
     else:
-        # 비정상 조기 종료라면 남아있되,
-        # 사람도 없으면 위에서 이미 나갔으니까 여기선 그냥 대기
-        print("[WARN] 비정상 조기 종료 → 채널은 유지 (사용자 재요청 대기)")
+        print("[WARN] 비정상 조기 종료 → 채널 유지 (사용자 재요청 대기)")
 
 async def maybe_start_playing(ctx, guild_player: GuildMusicPlayer):
-    """재생 중이 아니면 바로 재생 시작. 이미 재생 중이면 아무것도 안 함."""
-    if guild_player.playing:
-        return
-    if not guild_player.has_next_track():
+    """재생 중이 아니면 바로 재생 시작."""
+    if guild_player.playing or not guild_player.has_next_track():
         return
 
-    # voice 연결 (이미 있으면 재사용, 이동 없음)
     vc = ctx.guild.voice_client
     if vc is None or not vc.is_connected():
         vc = await ensure_voice(ctx)
 
     first_track = guild_player.pop_next_track()
-    guild_player.playing = True  # 여기서 먼저 True로 올린다
+    guild_player.playing = True
 
     loop = asyncio.get_event_loop()
     start_playback(vc, first_track, guild_player, loop)
 
-    embed = discord.Embed(
-        title="지금 재생 중 🎵",
-        description=first_track["title"],
-        color=0x00ff56
-    )
+    embed = discord.Embed(title="지금 재생 중 🎵", description=first_track["title"], color=0x00ff56)
     await ctx.send(embed=embed)
 
 # =========================
-# Commands
+# Commands & Helpers
 # =========================
-
 def voice_channel_is_empty(vc: discord.VoiceClient) -> bool:
-    """
-    현재 voice client가 붙어 있는 채널에 '봇 이외의 유저'가 아무도 없으면 True
-    """
+    """현재 voice client 채널에 '봇 이외 유저'가 없으면 True"""
     if not vc or not vc.channel:
-        return True  # 연결 자체가 없으면 비었다고 간주
-    channel = vc.channel
-    # 채널 멤버 중에 봇이 아닌 유저가 있는가?
-    for member in channel.members:
+        return True
+    for member in vc.channel.members:
         if not member.bot:
             return False
     return True
 
 @bot.command(aliases=['입장'])
 async def join(ctx):
-    """현재 유저 음성 채널에 봇 접속 (또는 이미 있으면 OK)."""
     try:
         vc = await ensure_voice(ctx)
     except commands.CommandError:
         return
-
-    embed = discord.Embed(
-        title=":white_check_mark: 연결됨",
-        description=f"{vc.channel.name} 에 접속했습니다.",
-        color=0x00ff56
-    )
+    embed = discord.Embed(title=":white_check_mark: 연결됨", description=f"{vc.channel.name} 에 접속했습니다.", color=0x00ff56)
     await ctx.send(embed=embed)
 
 @bot.command(aliases=['나가기'])
 async def out(ctx):
-    """봇 나가기 + 큐 초기화."""
     player = get_player(ctx.guild.id)
     vc = ctx.guild.voice_client
 
@@ -325,162 +347,91 @@ async def out(ctx):
         await vc.disconnect()
         player.queue.clear()
         player.playing = False
-
         embed = discord.Embed(color=0x00ff56)
-        embed.add_field(
-            name=":regional_indicator_b::regional_indicator_y::regional_indicator_e:",
-            value=f"{ch_name} 에서 나갔습니다.",
-            inline=False
-        )
+        embed.add_field(name=":regional_indicator_b::regional_indicator_y::regional_indicator_e:",
+                        value=f"{ch_name} 에서 나갔습니다.", inline=False)
         await ctx.send(embed=embed)
     else:
         embed = discord.Embed(color=0xf66c24)
-        embed.add_field(
-            name=":grey_question:",
-            value="현재 음성 채널에 봇이 없습니다."
-        )
+        embed.add_field(name=":grey_question:", value="현재 음성 채널에 봇이 없습니다.")
         await ctx.send(embed=embed)
 
 @bot.command(name="p")
 async def play(ctx, *, query: str = None):
-    """
-    !p <검색어 또는 유튜브URL>
-    - 즉각 '검색중...' 메시지 먼저 보내고
-    - yt-dlp는 다른 스레드에서 돌려서 렉 줄임
-    - 큐에 넣고, 필요하면 재생 시작
-    """
-    if query is None or query.strip() == "":
+    if not query or query.strip() == "":
         embed = discord.Embed(color=0xf66c24)
-        embed.add_field(
-            name=":question:",
-            value="사용법: `!p <유튜브 검색어>` 또는 `!p <유튜브 링크>`"
-        )
+        embed.add_field(name=":question:", value="사용법: `!p <유튜브 검색어>` 또는 `!p <유튜브 링크>`")
         return await ctx.send(embed=embed)
 
-    # 즉시 반응 (UX 개선)
-    wait_embed = discord.Embed(
-        color=0x999999,
-        description=f"🔍 `{query}` 검색중..."
-    )
+    wait_embed = discord.Embed(color=0x999999, description=f"🔍 `{query}` 검색중...")
     status_msg = await ctx.send(embed=wait_embed)
 
-    # 트랙 정보 비동기 수집
     track_info = await get_track_info(query)
     track_info["requester"] = ctx.author.display_name
 
     player = get_player(ctx.guild.id)
     player.add_to_queue(track_info)
-
     position = len(player.queue)
 
     done_embed = discord.Embed(color=0x00ff56)
-    done_embed.add_field(
-        name=":notes: 리스트에 추가",
-        value=f"{position}. {track_info['title']} (요청: {track_info['requester']})"
-    )
+    done_embed.add_field(name=":notes: 리스트에 추가",
+                         value=f"{position}. {track_info['title']} (요청: {track_info['requester']})")
     await status_msg.edit(embed=done_embed)
 
-    # 재생 시작 시도
     await maybe_start_playing(ctx, player)
 
 @bot.command(name="remove")
 async def remove_track(ctx, index: int = None):
-    """!remove <번호> : 리스트에서 해당 번호 제거."""
     player = get_player(ctx.guild.id)
-
     if index is None:
         embed = discord.Embed(color=0xf66c24)
-        embed.add_field(
-            name=":question:",
-            value="사용법: `!remove <번호>`"
-        )
+        embed.add_field(name=":question:", value="사용법: `!remove <번호>`")
         return await ctx.send(embed=embed)
-
     removed = player.remove_from_queue_index(index - 1)
     if removed is None:
         embed = discord.Embed(color=0xf66c24)
-        embed.add_field(
-            name=":x:",
-            value=f"{index} 번 항목은 큐에 없습니다."
-        )
+        embed.add_field(name=":x:", value=f"{index} 번 항목은 큐에 없습니다.")
         return await ctx.send(embed=embed)
-
     embed = discord.Embed(color=0x00ff56)
-    embed.add_field(
-        name=":wastebasket: 제거됨",
-        value=f"{index}. {removed['title']}"
-    )
+    embed.add_field(name=":wastebasket: 제거됨", value=f"{index}. {removed['title']}")
     await ctx.send(embed=embed)
 
 @bot.command(name="search")
 async def search_tracks(ctx, *, query: str = None):
-    """
-    !search <키워드>
-    - 바로 '검색중...' 메세지 보냄 (체감 빠르게)
-    - 상위 5개 결과 목록/이모지 달고
-    - 리액션으로 선택하면 큐에 추가 & 필요시 재생
-    """
-    if query is None or query.strip() == "":
+    if not query or query.strip() == "":
         embed = discord.Embed(color=0xf66c24)
-        embed.add_field(
-            name=":question:",
-            value="사용법: `!search <키워드>`"
-        )
+        embed.add_field(name=":question:", value="사용법: `!search <키워드>`")
         return await ctx.send(embed=embed)
 
-    wait_embed = discord.Embed(
-        color=0x999999,
-        description=f"🔍 `{query}` 검색중..."
-    )
+    wait_embed = discord.Embed(color=0x999999, description=f"🔍 `{query}` 검색중...")
     loading_msg = await ctx.send(embed=wait_embed)
 
     results = await search_top5(query)
-    if len(results) == 0:
+    if not results:
         nores_embed = discord.Embed(color=0xf66c24)
-        nores_embed.add_field(
-            name=":mag:",
-            value="검색 결과가 없습니다."
-        )
+        nores_embed.add_field(name=":mag:", value="검색 결과가 없습니다.")
         return await loading_msg.edit(embed=nores_embed)
 
-    # 결과 embed
-    desc_lines = []
-    for i, r in enumerate(results, start=1):
-        desc_lines.append(f"{i}. {r['title']}")
-    desc_text = "\n".join(desc_lines)
-
-    res_embed = discord.Embed(
-        title=f"검색 결과: {query}",
-        description=desc_text,
-        color=0x00ff56
-    )
+    desc_lines = [f"{i}. {r['title']}" for i, r in enumerate(results, start=1)]
+    res_embed = discord.Embed(title=f"검색 결과: {query}", description="\n".join(desc_lines), color=0x00ff56)
     res_embed.set_footer(text="원하는 번호(1️⃣~5️⃣)에 반응하면 큐에 추가됩니다.")
     await loading_msg.edit(embed=res_embed)
 
-    # 결과 저장
     player = get_player(ctx.guild.id)
     player.search_results[loading_msg.id] = results
 
-    # 리액션 부착
     for i in range(min(len(results), 5)):
         await loading_msg.add_reaction(EMOJI_CHOICES[i])
 
-# =========================
-# Reaction Handler
-# =========================
-
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    """!search 결과 메시지에 1️⃣~5️⃣ 반응하면 큐에 추가하고 필요시 재생."""
     if payload.user_id == bot.user.id:
         return
-
     guild = bot.get_guild(payload.guild_id)
     if guild is None:
         return
 
     player = get_player(guild.id)
-
     if payload.message_id not in player.search_results:
         return
 
@@ -494,7 +445,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         return
 
     chosen = candidates[choice_index]
-
     member = guild.get_member(payload.user_id)
     requester_name = member.display_name if member else "unknown"
 
@@ -511,36 +461,26 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if channel is not None:
         pos = len(player.queue)
         added_embed = discord.Embed(color=0x00ff56)
-        added_embed.add_field(
-            name=":notes: 큐에 추가",
-            value=f"{pos}. {track_info['title']} (요청: {track_info['requester']})"
-        )
+        added_embed.add_field(name=":notes: 큐에 추가",
+                              value=f"{pos}. {track_info['title']} (요청: {track_info['requester']})")
         await channel.send(embed=added_embed)
 
-        # 아직 아무것도 안 재생중이면 여기서 바로 재생 시작
         if not player.playing:
             vc = guild.voice_client
             if vc is None or not vc.is_connected():
-                # 유저 음성 채널로 새로 붙기
                 if member and member.voice and member.voice.channel:
                     vc = await member.voice.channel.connect()
-            # vc 있을 때만 재생 시도
-            if vc and (vc.is_connected()):
+            if vc and vc.is_connected():
                 first_track = player.pop_next_track()
                 player.playing = True
                 loop = asyncio.get_event_loop()
                 start_playback(vc, first_track, player, loop)
-
-                play_embed = discord.Embed(
-                    title="지금 재생 중 🎵",
-                    description=first_track["title"],
-                    color=0x00ff56
-                )
+                play_embed = discord.Embed(title="지금 재생 중 🎵",
+                                           description=first_track["title"], color=0x00ff56)
                 await channel.send(embed=play_embed)
-                
+
 @bot.command(name="skip")
 async def skip_track(ctx):
-    """현재 곡을 건너뛰고 다음 곡 재생 (없으면 퇴장)"""
     vc = ctx.guild.voice_client
     if not vc or not vc.is_connected():
         embed = discord.Embed(color=0xf66c24)
@@ -550,41 +490,28 @@ async def skip_track(ctx):
     player = get_player(ctx.guild.id)
 
     if vc.is_playing():
-        vc.stop()  # 현재 곡 즉시 중단 → after_play 트리거됨
-        await asyncio.sleep(0.5)  # handle_after_track 타이밍 보정
+        vc.stop()
+        await asyncio.sleep(0.5)
     else:
         embed = discord.Embed(color=0xf66c24)
         embed.add_field(name=":zzz:", value="현재 재생 중인 곡이 없습니다.")
         return await ctx.send(embed=embed)
 
-    # 다음 곡 있으면 자동 재생, 없으면 퇴장
     if player.has_next_track():
         next_track = player.pop_next_track()
         player.playing = True
         loop = asyncio.get_event_loop()
         start_playback(vc, next_track, player, loop)
-
-        embed = discord.Embed(
-            title="⏭ 다음 곡 재생",
-            description=next_track["title"],
-            color=0x00ff56
-        )
+        embed = discord.Embed(title="⏭ 다음 곡 재생", description=next_track["title"], color=0x00ff56)
         await ctx.send(embed=embed)
     else:
         player.playing = False
         await vc.disconnect()
-        embed = discord.Embed(
-            color=0xf66c24,
-            description="⏹️ 재생할 다음 곡이 없어 퇴장합니다."
-        )
+        embed = discord.Embed(color=0xf66c24, description="⏹️ 재생할 다음 곡이 없어 퇴장합니다.")
         await ctx.send(embed=embed)
 
-# =========================
-# !list (기존 !queue 대체)
-# =========================
 @bot.command(name="list", aliases=["queue", "q"])
 async def show_list(ctx):
-    """현재 재생 중 + 대기열 표시"""
     player = get_player(ctx.guild.id)
     vc = ctx.guild.voice_client
 
@@ -601,44 +528,26 @@ async def show_list(ctx):
         f"{idx}. {t['title']} (요청: {t.get('requester', '알 수 없음')})"
         for idx, t in enumerate(player.queue, start=1)
     ]
+    desc_text = (current or "") + ("\n".join(desc_lines) if desc_lines else "대기열이 비었습니다.")
 
-    desc_text = (current or "") + "\n".join(desc_lines) if desc_lines else "대기열이 비었습니다."
-
-    embed = discord.Embed(
-        title="📜 현재 재생 리스트",
-        description=desc_text,
-        color=0x00ff56
-    )
+    embed = discord.Embed(title="📜 현재 재생 리스트", description=desc_text, color=0x00ff56)
     await ctx.send(embed=embed)
 
 # =========================
-# !shuffle
+# on_ready (헬스체크 로그 강화)
 # =========================
-@bot.command(name="shuffle")
-async def shuffle_list(ctx):
-    """현재 대기열을 섞기"""
-    player = get_player(ctx.guild.id)
-
-    if len(player.queue) < 2:
-        embed = discord.Embed(color=0xf66c24)
-        embed.add_field(name=":grey_question:", value="섞을 대기열이 없습니다.")
-        return await ctx.send(embed=embed)
-
-    random.shuffle(player.queue)
-
-    embed = discord.Embed(color=0x00ff56)
-    embed.add_field(name="🔀 셔플 완료", value="대기열의 순서를 무작위로 변경했습니다.")
-    await ctx.send(embed=embed)
-
-# =========================
-# on_ready
-# =========================
-
 @bot.event
 async def on_ready():
     print(f'{bot.user} 봇을 실행합니다.')
+    print(f"[HEALTH] Opus loaded? {discord.opus.is_loaded()}")
+    print(f"[HEALTH] ffmpeg in PATH? {shutil.which('ffmpeg')}")
+    print(f"[HEALTH] Python={platform.python_version()} | Platform={platform.platform()}")
 
 # =========================
 # run
 # =========================
-bot.run(Token)
+if __name__ == "__main__":
+    # 중복 실행 방지: systemd 등으로 서비스화 권장
+    # 환경 변수/가상환경 PATH 문제로 ffmpeg/opus가 안 잡히면 실행 전 PATH 확인
+    # print("PATH =", os.environ.get("PATH"))
+    bot.run(Token)
