@@ -15,6 +15,7 @@ from typing import List, Optional, Dict
 import discord
 from discord.ext import commands
 import yt_dlp
+from yt_dlp.utils import DownloadError, ExtractorError
 
 from dico_token import Token  # 봇 토큰은 별도 파일/환경변수로 관리 권장
 
@@ -29,7 +30,7 @@ def load_opus_portably() -> bool:
     if discord.opus.is_loaded():
         return True
 
-    # 1) 환경변수
+    # 1) 환경변수 우선
     env_path = os.getenv("OPUS_LIB")
     if env_path:
         try:
@@ -112,66 +113,102 @@ bot = commands.Bot(
 )
 
 # =========================
+# yt-dlp 공용 옵션 빌더 (쿠키/우회/재시도)
+# =========================
+UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
+
+def build_ydl_opts(default_search: Optional[str] = None) -> dict:
+    """
+    yt-dlp 공통 옵션:
+      - 쿠키 파일 자동 인식 (env: YTDLP_COOKIES)
+      - 안드로이드 플레이어 클라이언트 우회
+      - 한국어 우선 헤더
+      - 재시도/프래그먼트 재시도/지오바이패스
+    """
+    opts: Dict[str, object] = {
+        "format": "bestaudio[ext=m4a]/bestaudio/best",
+        "noplaylist": True,
+        "quiet": True,
+        "skip_download": True,
+        "http_headers": {
+            "User-Agent": UA,
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://www.youtube.com/",
+        },
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android"],
+                # 필요시 DASH 스킵 등 추가 가능
+                # "skip": ["dash"],
+            }
+        },
+        "retries": 3,
+        "file_access_retries": 2,
+        "fragment_retries": 3,
+        "geo_bypass": True,
+    }
+    if default_search:
+        opts["default_search"] = default_search
+
+    cookies = os.getenv("YTDLP_COOKIES")
+    if cookies and os.path.exists(cookies):
+        opts["cookiefile"] = cookies
+
+    return opts
+
+# =========================
 # yt-dlp Helper (동기 함수)
 # =========================
 def _ytdlp_search_one_sync(query: str) -> dict:
-    """검색어로 유튜브 검색해서 첫번째 결과 추출 (동기)."""
-    ydl_opts = {
-        "format": "bestaudio[ext=m4a]/bestaudio/best",
-        "noplaylist": True,
-        "quiet": True,
-        "default_search": "ytsearch",
-        "skip_download": True,
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(query, download=False)
-        if "entries" in info:
-            info = info["entries"][0]
-    return {
-        "webpage_url": info.get("webpage_url"),
-        "url": info.get("url"),
-        "title": info.get("title", "Unknown Title"),
-        "duration": info.get("duration"),
-    }
+    ydl_opts = build_ydl_opts(default_search="ytsearch")
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(query, download=False)
+            if "entries" in info:
+                info = info["entries"][0]
+        return {
+            "webpage_url": info.get("webpage_url"),
+            "url": info.get("url"),
+            "title": info.get("title", "Unknown Title"),
+            "duration": info.get("duration"),
+        }
+    except (DownloadError, ExtractorError) as e:
+        raise RuntimeError(f"yt-dlp search failed: {e}") from e
 
 def _ytdlp_from_url_sync(url: str) -> dict:
-    """유튜브 URL 직접 분석 (동기)."""
-    ydl_opts = {
-        "format": "bestaudio[ext=m4a]/bestaudio/best",
-        "noplaylist": True,
-        "quiet": True,
-        "skip_download": True,
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-    return {
-        "webpage_url": info.get("webpage_url"),
-        "url": info.get("url"),
-        "title": info.get("title", "Unknown Title"),
-        "duration": info.get("duration"),
-    }
+    ydl_opts = build_ydl_opts()
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        return {
+            "webpage_url": info.get("webpage_url"),
+            "url": info.get("url"),
+            "title": info.get("title", "Unknown Title"),
+            "duration": info.get("duration"),
+        }
+    except (DownloadError, ExtractorError) as e:
+        raise RuntimeError(f"yt-dlp url failed: {e}") from e
 
 def _ytdlp_search_top5_sync(query: str) -> List[dict]:
-    """검색어로 유튜브 상위 5개 결과 추출 (동기)."""
-    ydl_opts = {
-        "format": "bestaudio[ext=m4a]/bestaudio/best",
-        "noplaylist": True,
-        "quiet": True,
-        "default_search": "ytsearch5",
-        "skip_download": True,
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(query, download=False)
-        entries = info.get("entries", [])
-    results = []
-    for e in entries[:5]:
-        results.append({
-            "webpage_url": e.get("webpage_url"),
-            "url": e.get("url"),
-            "title": e.get("title", "Unknown Title"),
-            "duration": e.get("duration"),
-        })
-    return results
+    ydl_opts = build_ydl_opts(default_search="ytsearch5")
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(query, download=False)
+            entries = info.get("entries", [])
+        results = []
+        for e in entries[:5]:
+            results.append({
+                "webpage_url": e.get("webpage_url"),
+                "url": e.get("url"),
+                "title": e.get("title", "Unknown Title"),
+                "duration": e.get("duration"),
+            })
+        return results
+    except (DownloadError, ExtractorError) as e:
+        raise RuntimeError(f"yt-dlp top5 failed: {e}") from e
 
 # =========================
 # yt-dlp Async Wrapper
@@ -282,7 +319,7 @@ async def handle_after_track(vc: discord.VoiceClient, guild_player: GuildMusicPl
     # 2) 다음 곡 있으면 재생
     if guild_player.has_next_track():
         next_track = guild_player.pop_next_track()
-        loop = asyncio.get_eventLoop() if hasattr(asyncio, "getEventLoop") else asyncio.get_event_loop()
+        loop = asyncio.get_event_loop()
         start_playback(vc, next_track, guild_player, loop)
         return
 
@@ -366,7 +403,26 @@ async def play(ctx, *, query: str = None):
     wait_embed = discord.Embed(color=0x999999, description=f"🔍 `{query}` 검색중...")
     status_msg = await ctx.send(embed=wait_embed)
 
-    track_info = await get_track_info(query)
+    try:
+        track_info = await get_track_info(query)
+    except RuntimeError as e:
+        guide = (
+            "유튜브에서 ‘봇 확인’에 걸렸습니다.\n"
+            "서버에 유튜브 쿠키를 설정해야 해요.\n"
+            "1) 로컬 브라우저에서 youtube.com 로그인 상태로 cookies.txt 추출\n"
+            "2) EC2에 업로드 후 환경변수 설정\n"
+            "```bash\n"
+            "mkdir -p ~/cookies && chmod 700 ~/cookies\n"
+            "scp youtube.txt ec2-user@<EC2_IP>:~/cookies/youtube.txt\n"
+            "chmod 600 ~/cookies/youtube.txt\n"
+            "export YTDLP_COOKIES=/home/ec2-user/cookies/youtube.txt\n"
+            "```\n"
+            "설정 후 다시 시도해 주세요."
+        )
+        err_embed = discord.Embed(title="⚠️ 재생 실패", description=guide, color=0xf66c24)
+        err_embed.set_footer(text=str(e))
+        return await status_msg.edit(embed=err_embed)
+
     track_info["requester"] = ctx.author.display_name
 
     player = get_player(ctx.guild.id)
@@ -374,8 +430,10 @@ async def play(ctx, *, query: str = None):
     position = len(player.queue)
 
     done_embed = discord.Embed(color=0x00ff56)
-    done_embed.add_field(name=":notes: 리스트에 추가",
-                         value=f"{position}. {track_info['title']} (요청: {track_info['requester']})")
+    done_embed.add_field(
+        name=":notes: 리스트에 추가",
+        value=f"{position}. {track_info['title']} (요청: {track_info['requester']})"
+    )
     await status_msg.edit(embed=done_embed)
 
     await maybe_start_playing(ctx, player)
@@ -406,7 +464,13 @@ async def search_tracks(ctx, *, query: str = None):
     wait_embed = discord.Embed(color=0x999999, description=f"🔍 `{query}` 검색중...")
     loading_msg = await ctx.send(embed=wait_embed)
 
-    results = await search_top5(query)
+    try:
+        results = await search_top5(query)
+    except RuntimeError as e:
+        err = discord.Embed(title="⚠️ 검색 실패", description="yt-dlp 검색에 실패했습니다. (쿠키 설정 필요할 수 있음)", color=0xf66c24)
+        err.set_footer(text=str(e))
+        return await loading_msg.edit(embed=err)
+
     if not results:
         nores_embed = discord.Embed(color=0xf66c24)
         nores_embed.add_field(name=":mag:", value="검색 결과가 없습니다.")
@@ -547,7 +611,7 @@ async def on_ready():
 # run
 # =========================
 if __name__ == "__main__":
-    # 중복 실행 방지: systemd 등으로 서비스화 권장
-    # 환경 변수/가상환경 PATH 문제로 ffmpeg/opus가 안 잡히면 실행 전 PATH 확인
-    # print("PATH =", os.environ.get("PATH"))
+    # systemd로 돌릴 때는 [Service]에 다음 추가 권장:
+    # Environment=YTDLP_COOKIES=/home/ec2-user/cookies/youtube.txt
+    # Environment=PATH=/home/ec2-user/.venv/bin:/usr/local/bin:/usr/bin
     bot.run(Token)
