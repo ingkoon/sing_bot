@@ -23,8 +23,10 @@ COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # 방어적 하드닝: root 대신 비특권 유저로 실행.
-# entrypoint가 런타임에 /app/dico_token.py 를 생성하므로 /app 쓰기 권한 부여.
-RUN useradd --create-home --uid 10001 appuser \
+# uid는 호스트 배포 유저(ec2-user=1000)와 맞춤 — 호스트에서 chmod 600 으로
+# 바인드 마운트되는 cookies.txt 를 권한 완화 없이 그대로 읽기 위함.
+# entrypoint가 런타임에 /app/dico_token.py 를 생성하므로 /app 쓰기 권한도 부여.
+RUN useradd --create-home --uid 1000 appuser \
     && chown -R appuser:appuser /app
 USER appuser
 
