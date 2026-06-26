@@ -22,4 +22,10 @@ COPY voiceroom/ ./
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# 방어적 하드닝: root 대신 비특권 유저로 실행.
+# entrypoint가 런타임에 /app/dico_token.py 를 생성하므로 /app 쓰기 권한 부여.
+RUN useradd --create-home --uid 10001 appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
 ENTRYPOINT ["/entrypoint.sh"]

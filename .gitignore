@@ -1,5 +1,9 @@
 voiceroom/dico_token.py
 
+# 파이썬 컴파일 산물 — 토큰 모듈의 .pyc 유출 방지 위해 반드시 제외
+__pycache__/
+*.pyc
+
 # 비밀값 — 절대 커밋 금지
 deploy_key
 deploy_key.pub

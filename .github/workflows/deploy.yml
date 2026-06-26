@@ -67,21 +67,23 @@ jobs:
       - name: SSH into EC2 and roll out
         uses: appleboy/ssh-action@v1
         env:
-          # GitHub Secret 을 원격 셸로 안전하게 전달 (로그에 노출되지 않음)
+          # GitHub Secret 을 원격 셸로 env 로 전달 (스크립트 텍스트에 보간하지 않음 → 더 안전)
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           passphrase: ${{ secrets.EC2_SSH_PASSPHRASE }}
-          envs: DISCORD_TOKEN
+          envs: DISCORD_TOKEN,GHCR_USER,GHCR_TOKEN
           script: |
             set -e
             cd ~/sing_bot
             # Secret 값을 EC2 의 .env 파일로 생성 (compose 가 env_file 로 읽어 컨테이너에 주입)
             printf 'DISCORD_TOKEN=%s\n' "$DISCORD_TOKEN" > .env
             chmod 600 .env
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
             docker compose pull
             docker compose up -d
             docker image prune -f
