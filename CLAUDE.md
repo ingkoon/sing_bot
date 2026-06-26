@@ -101,7 +101,7 @@ python ingribo.py
 
 ### 재생 파이프라인
 1. `get_track_info()` / `search_top5()`: yt-dlp 호출을 `asyncio.to_thread`로 비동기 래핑(블로킹 방지). `track_cache`로 동일 쿼리 캐싱.
-2. `_extract_with_clients()`: `player_client`를 `web → mweb → android` 순으로 폴백하며 추출 재시도. 특정 클라이언트에서만 막히는 영상 대응. **`ios`는 쿠키를 무시(OAuth 기반)하므로 제외함.**
+2. `_extract_with_clients()`: `player_client`를 `tv → web_safari → mweb` 순으로 폴백하며 추출 재시도. 특정 클라이언트에서만 막히는 영상 대응. **`ios`/`android`는 쿠키를 무시(android는 'does not support cookies')하므로 제외.** `web`/`mweb`는 SABR로 'Only images are available'(포맷 0개)가 잦아 **실제 포맷을 안정적으로 반환하는 `tv`(TV HTML5)를 최우선**으로 둠. 또한 yt-dlp가 종료 시 cookiefile을 다시 저장하므로, `:ro` 마운트 충돌·동시 추출 경합을 피하려 매 시도 쿠키를 **쓰기 가능한 임시 파일로 복사**해 사용(원본 보존).
 3. `start_playback()`: `FFmpegPCMAudio` + `PCMVolumeTransformer(volume=0.3)`로 재생. **기본 볼륨 30%.** ffmpeg `before_options`에 `-reconnect` 계열 옵션으로 스트리밍 끊김 재연결.
 4. `after_play` 콜백 → `handle_after_track()`: 다음 곡 자동 재생. 채널에 사람이 없으면 즉시 퇴장, 정상 종료(재생시간 ≥ duration*0.8) 시 퇴장, 조기 종료면 채널 유지.
 
@@ -113,7 +113,7 @@ python ingribo.py
 ### EC2/데이터센터 IP 차단 우회 (PO Token)
 데이터센터 IP(EC2)는 "Sign in to confirm you're not a bot" 챌린지로 재생이 막힙니다. 대응:
 - **bgutil POT 공급자**: `brainicism/bgutil-ytdlp-pot-provider`를 compose 사이드카(포트 4416)로 띄우고, 봇은 `bgutil-ytdlp-pot-provider` pip 플러그인으로 통신. `_ydl_opts_base()`가 `BGUTIL_POT_BASE_URL` 환경변수를 읽어 `extractor_args["youtubepot-bgutilhttp"]["base_url"]`로 주입.
-- **클라이언트**: `ios` 제외(쿠키 무시). `web/mweb/android`만 사용.
+- **클라이언트**: `ios`/`android` 제외(쿠키 무시). `tv/web_safari/mweb` 사용(`tv` 우선 — SABR 회피).
 - **쿠키**: `YTDLP_COOKIES`로 Netscape 쿠키 제공(버리는 계정 권장 — 밴 위험).
 - **Deno**: n-challenge(서명 해독) JS 런타임. Dockerfile에서 설치.
 - 그래도 막히면 최종 수단은 **residential 프록시**(yt-dlp `--proxy`).
