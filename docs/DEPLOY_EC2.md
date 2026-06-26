@@ -96,8 +96,10 @@ docker --version && docker compose version   # 확인
 | `EC2_HOST` | EC2 Elastic IP (또는 도메인) | 1단계의 고정 IP |
 | `EC2_USER` | `ubuntu` | Ubuntu AMI 기본 사용자 |
 | `EC2_SSH_KEY` | `deploy_key` 개인키 전체 내용 | 2-4에서 복사한 값 |
+| `EC2_SSH_PASSPHRASE` | 개인키의 패스프레이즈 | **패스프레이즈 없는 키면 생략**(빈 값이면 무시됨) |
 
-> `GITHUB_TOKEN`은 Actions가 자동 제공하므로 등록 불필요. (GHCR push 및 EC2에서의 pull 인증에 사용)
+> `GITHUB_TOKEN`은 Actions가 자동 제공하므로 등록 불필요.
+> 💡 자동화용 키는 **패스프레이즈를 비워서** 만드는 게 일반적입니다. 패스프레이즈가 있으면 위 `EC2_SSH_PASSPHRASE` Secret이 반드시 필요합니다. (GHCR push 및 EC2에서의 pull 인증에 사용)
 
 ---
 
