@@ -4,6 +4,7 @@ import re
 import time
 import random
 import shutil
+import tempfile
 import asyncio
 from typing import List, Optional, Dict
 
@@ -83,9 +84,10 @@ def _ydl_opts_base(default_search: Optional[str] = None) -> Dict[str, object]:
     return opts
 
 # 여러 클라이언트로 재시도 (일부 영상이 특정 클라에서만 막히는 대응)
-# 주의: ios 클라이언트는 쿠키를 무시(OAuth 기반)하므로 제외.
-# 쿠키를 존중하는 web/mweb/android 위주로 폴백 (bgutil POT 공급자와 함께 사용).
-PLAYER_CLIENTS = (["web"], ["mweb"], ["android"])
+# 주의: ios/android 클라이언트는 쿠키를 무시(android는 'does not support cookies')하므로 제외.
+# 2026년 기준 web/mweb는 SABR로 막혀 'Only images are available'(포맷 없음)이 잦음.
+# tv(TV HTML5) 클라이언트가 쿠키+POT와 함께 실제 포맷을 안정적으로 반환 → 최우선.
+PLAYER_CLIENTS = (["tv"], ["web_safari"], ["mweb"])
 
 def _extract_with_clients(extract_fn, *args, default_search: Optional[str] = None):
     """
@@ -101,6 +103,18 @@ def _extract_with_clients(extract_fn, *args, default_search: Optional[str] = Non
         ea["youtube"] = ytargs
         ydl_opts["extractor_args"] = ea
 
+        # yt-dlp는 추출 종료 시 cookiefile에 쿠키를 다시 저장한다.
+        # 마운트된 원본이 읽기전용(:ro)이면 OSError로 성공한 추출까지 버려지고,
+        # 동시 추출이 같은 파일에 쓰면 손상될 수 있다. 매 시도마다 쓰기 가능한
+        # 임시 파일로 복사해 사용하고 끝나면 삭제한다(원본은 건드리지 않음).
+        tmp_cookie = None
+        src_cookie = ydl_opts.get("cookiefile")
+        if src_cookie:
+            fd, tmp_cookie = tempfile.mkstemp(prefix="ytcookies_", suffix=".txt")
+            os.close(fd)
+            shutil.copyfile(src_cookie, tmp_cookie)
+            ydl_opts["cookiefile"] = tmp_cookie
+
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 print(f"[YTDLP] Try player_client={client}")
@@ -109,6 +123,9 @@ def _extract_with_clients(extract_fn, *args, default_search: Optional[str] = Non
             last_err = e
             print(f"[YTDLP] player_client={client} failed: {e}")
             continue
+        finally:
+            if tmp_cookie and os.path.exists(tmp_cookie):
+                os.remove(tmp_cookie)
     raise last_err
 
 # =========================
