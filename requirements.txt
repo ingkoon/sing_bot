@@ -1,6 +1,7 @@
-discord.py
+# [voice] extra: discord.py 2.6+ 음성 연결에 필요한 davey(DAVE E2EE)+PyNaCl 포함.
+# 없으면 음성 채널 입장 시 RuntimeError: davey library needed in order to use voice.
+discord.py[voice]
 # [default] extras: brotli/certifi/mutagen/pycryptodomex/websockets 포함 (n-challenge 등 안정성↑)
 yt-dlp[default]
 # bgutil POT 공급자 클라이언트 플러그인 (사이드카 HTTP 서버와 통신)
 bgutil-ytdlp-pot-provider
-PyNaCl
