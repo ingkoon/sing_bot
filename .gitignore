@@ -1,1 +1,8 @@
 voiceroom/dico_token.py
+
+# 비밀값 — 절대 커밋 금지
+deploy_key
+deploy_key.pub
+*.pem
+.env
+cookies.txt

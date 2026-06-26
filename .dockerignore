@@ -1,0 +1,9 @@
+.git
+.github
+.idea
+**/__pycache__
+**/*.pyc
+# 토큰은 절대 이미지에 포함하지 않는다 (런타임에 entrypoint가 생성)
+**/dico_token.py
+.env
+*.md

@@ -64,6 +64,16 @@ def _ydl_opts_base(default_search: Optional[str] = None) -> Dict[str, object]:
     if default_search:
         opts["default_search"] = default_search
 
+    # PO Token 공급자(bgutil HTTP 서버)를 가리키도록 설정.
+    # 데이터센터 IP(EC2)에서 'Sign in to confirm you're not a bot' 우회에 필요.
+    # compose 사이드카 서비스명 기준 기본값(http://bgutil-provider:4416).
+    pot_base = os.getenv("BGUTIL_POT_BASE_URL")
+    if pot_base:
+        opts["extractor_args"] = {
+            "youtubepot-bgutilhttp": {"base_url": [pot_base]},
+        }
+        print(f"[YTDLP] Using bgutil POT provider: {pot_base}")
+
     cookiefile = os.getenv("YTDLP_COOKIES")
     if cookiefile and os.path.exists(cookiefile):
         opts["cookiefile"] = cookiefile
@@ -73,7 +83,9 @@ def _ydl_opts_base(default_search: Optional[str] = None) -> Dict[str, object]:
     return opts
 
 # 여러 클라이언트로 재시도 (일부 영상이 특정 클라에서만 막히는 대응)
-PLAYER_CLIENTS = (["android"], ["tv"], ["web"], ["ios"])
+# 주의: ios 클라이언트는 쿠키를 무시(OAuth 기반)하므로 제외.
+# 쿠키를 존중하는 web/mweb/android 위주로 폴백 (bgutil POT 공급자와 함께 사용).
+PLAYER_CLIENTS = (["web"], ["mweb"], ["android"])
 
 def _extract_with_clients(extract_fn, *args, default_search: Optional[str] = None):
     """
@@ -566,6 +578,7 @@ async def on_ready():
     print(f"[HEALTH] ffmpeg in PATH? {shutil.which('ffmpeg')}")
     cookiefile = os.getenv("YTDLP_COOKIES")
     print(f"[HEALTH] YTDLP_COOKIES={cookiefile} exists={os.path.exists(cookiefile) if cookiefile else None}")
+    print(f"[HEALTH] BGUTIL_POT_BASE_URL={os.getenv('BGUTIL_POT_BASE_URL')}")
     print(f"[HEALTH] Opus loaded? {discord.opus.is_loaded()}")
 
 # =========================

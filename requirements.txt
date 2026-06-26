@@ -1,0 +1,6 @@
+discord.py
+# [default] extras: brotli/certifi/mutagen/pycryptodomex/websockets 포함 (n-challenge 등 안정성↑)
+yt-dlp[default]
+# bgutil POT 공급자 클라이언트 플러그인 (사이드카 HTTP 서버와 통신)
+bgutil-ytdlp-pot-provider
+PyNaCl
