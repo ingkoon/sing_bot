@@ -11,11 +11,12 @@ services:
     environment:
       # PO Token 공급자(사이드카) 위치. 같은 compose 네트워크의 서비스명으로 접근.
       - BGUTIL_POT_BASE_URL=http://bgutil-provider:4416
-      # 유튜브 쿠키 사용 시 주석 해제 (아래 volumes 도 함께)
-      # - YTDLP_COOKIES=/app/cookies.txt
-    # 유튜브 쿠키(버리는 계정 권장)를 호스트에서 마운트
-    # volumes:
-    #   - ./cookies.txt:/app/cookies.txt:ro
+      # 유튜브 쿠키 사용. 데이터센터 IP에서 강하게 막힌 영상 우회에 필요.
+      - YTDLP_COOKIES=/app/cookies.txt
+    # 유튜브 쿠키(버리는 계정 권장)를 호스트에서 마운트.
+    # EC2 호스트의 ~/sing_bot/cookies.txt 가 컨테이너의 /app/cookies.txt 로 들어간다.
+    volumes:
+      - ./cookies.txt:/app/cookies.txt:ro
     depends_on:
       - bgutil-provider
     # 봇은 아웃바운드 전용이므로 노출 포트가 필요 없음
