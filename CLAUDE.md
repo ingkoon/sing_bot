@@ -90,13 +90,16 @@ python ingribo.py
 | `!out` | `!나가기` | 퇴장 + 큐 초기화 |
 | `!p <검색어\|URL>` | — | 검색/URL 재생 또는 큐 추가 |
 | `!skip` | — | 현재 곡 스킵, 다음 곡 없으면 퇴장 |
-| `!list` | `!queue`, `!q` | 큐 표시 |
+| `!list` | `!queue`, `!q` | 큐 표시(현재 곡 + 반복 모드 포함) |
+| `!np` | `!nowplaying`, `!now`, `!현재곡`, `!재생중` | 현재 곡 정보(진행바/요청자/반복/대기열) |
 | `!remove <번호>` | — | 큐에서 해당 번호 제거(1-based) |
 | `!shuffle` | — | 큐 셔플 |
+| `!loop <one\|all\|shuffle\|off>` | `!repeat`, `!반복` | 반복 모드 설정(한 곡/전체/랜덤/끄기). 같은 모드 재입력 시 토글 해제 |
 | `!search <검색어>` | — | 상위 5개 결과 + 1️⃣~5️⃣ 리액션 선택 |
 
 ### 상태 관리
-- **`GuildMusicPlayer`**: 길드(서버)별 재생 상태. `queue`, `playing` 플래그, `search_results`(메시지 ID → 검색 결과) 보유.
+- **`GuildMusicPlayer`**: 길드(서버)별 재생 상태. `queue`, `playing` 플래그, `current`(현재 곡), `loop_mode`(off/one/all/shuffle), `skip_requested`(스킵 시 한 곡 반복 무시 플래그), `text_channel`(자동 다음곡 안내 채널), `search_results`(메시지 ID → 검색 결과) 보유.
+  - 다음 곡 선택은 `pick_next(finished, force_advance)`로 일원화: `one`은 같은 곡 재생, `all`/`shuffle`은 끝난 곡을 큐 뒤로 되돌려 순환. 모든 재생은 `start_playback`을 통과하며 거기서 `current`/`playing`을 설정.
 - **`players: Dict[guild_id, GuildMusicPlayer]`** + `get_player(guild_id)`로 길드별 격리. **상태는 모두 인메모리이며 봇 재시작 시 소실됩니다.**
 
 ### 재생 파이프라인
@@ -104,6 +107,11 @@ python ingribo.py
 2. `_extract_with_clients()`: `player_client`를 `tv → web_safari → mweb` 순으로 폴백하며 추출 재시도. 특정 클라이언트에서만 막히는 영상 대응. **`ios`/`android`는 쿠키를 무시(android는 'does not support cookies')하므로 제외.** `web`/`mweb`는 SABR로 'Only images are available'(포맷 0개)가 잦아 **실제 포맷을 안정적으로 반환하는 `tv`(TV HTML5)를 최우선**으로 둠. 또한 yt-dlp가 종료 시 cookiefile을 다시 저장하므로, `:ro` 마운트 충돌·동시 추출 경합을 피하려 매 시도 쿠키를 **쓰기 가능한 임시 파일로 복사**해 사용(원본 보존).
 3. `start_playback()`: `FFmpegPCMAudio` + `PCMVolumeTransformer(volume=0.3)`로 재생. **기본 볼륨 30%.** ffmpeg `before_options`에 `-reconnect` 계열 옵션으로 스트리밍 끊김 재연결.
 4. `after_play` 콜백 → `handle_after_track()`: 다음 곡 자동 재생. 채널에 사람이 없으면 즉시 퇴장, 정상 종료(재생시간 ≥ duration*0.8) 시 퇴장, 조기 종료면 채널 유지.
+
+### 임베드 / 트랙 메타
+- 트랙 dict는 `webpage_url`/`url`/`title`/`duration`/`thumbnail`(+ 큐 추가 시 `requester`, 재생 시 `start_time`)을 보유. yt-dlp 추출 빌더 3종(`_ytdlp_search_one_sync`/`_ytdlp_from_url_sync`/`_ytdlp_search_top5_sync`)이 `thumbnail`을 함께 채운다.
+- `track_thumbnail(track)`: 썸네일이 없으면 `webpage_url`의 영상 ID로 `i.ytimg.com/.../hqdefault.jpg`를 유추(flat 검색 결과 등 누락 대비).
+- 사용자 안내 임베드는 두 헬퍼로 일원화: `build_added_embed`(곡 추가 — 제목/썸네일/길이/요청자/순번), `build_now_playing_embed`(현재 곡 — 제목/썸네일/진행바/요청자/반복/대기열). `!p`·리액션 선택·대체 트랙 추가, `!np`·자동 다음곡 안내가 이를 공유한다.
 
 ### 폴백 로직 (중요)
 - `!p`에서 1차 추출 실패 시: URL이면 메타에서 제목을 뽑아 `search_top5`로 **대체 트랙** 검색·검증 후 큐에 추가.
